@@ -1,0 +1,429 @@
+---
+title: " Vector Data Analysis using R"
+author: "Kwesie Benjamin"
+date: "5/12/2021"
+output:
+  rmdformats::readthedown:
+    gallery: yes
+    highlight: tango
+    lightbox: yes
+    self_contained: yes
+    thumbnails: yes
+  html_document:
+    df_print: paged
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,comment="",collapse = TRUE, message = FALSE,warning = FALSE)
+```
+
+
+## Objectives
+
+1. Hand on use of the sf package to read and manipulate spatial data.
+2. Familiarize oneself with some commonly used dplyr functions.
+3. Perform table and spatial join on spatial and non-spatial data.
+4. Learn basic mapping skills using `tmap()` and `leaflet()`.
+
+
+
+## Overview
+The sf package is very well documented. It has well-built functionalities that allow
+for easy vector geographic data processing and manipulation. It has alot of similarities with 
+PostGis, because both supports objects and functions specified in the **Open Geospatial Consortium(OGC)** and refers to formal standards(ISO 19125-1:20040). Leaflet is an open source javascript library for web mapping, it is usually use in conjuction with **HTML(HyperText Markup Language)** and **CSS (Casacading Style Sheet)**.It is very fuctional and effective for interactive web mapping.The tidyverse package is yet another powerful tool for data wrangling and processing in R.It is made up of a collection of other packages including dplyr,tidyr,readr,purr etc.
+
+
+
+Lets load the following libraries.
+```{r message=FALSE, warning=FALSE}
+
+library(sf)
+library(tidyverse)
+library(ggplot2)
+library(tmap)
+library(leaflet)
+library(htmltools)
+library(pals)
+```
+
+
+
+
+Lets load in all our data using `read_sf()` and `read.csv()`.
+```{r message=FALSE, warning=FALSE,results='hide'}
+#You would first need to setup your working directory
+#setwd("File Path")
+GhanaRegion<- read_sf("GhanaRegion.shp")
+GhanaDistrict <- read_sf("districts.shp")  
+ClassRoster <- read.csv("roster.csv")
+```
+
+
+
+
+## Checking and Setting CRS
+The coordinate refrence system(CRS) defines how the two-dimensional spatial object or element relate to the 
+surface of the earth. In this workflow we would be using the datum WGS84 with projection unit of Longitude and Latitude.
+
+
+
+Lets check the verious class and CRS of the *Spatial Objects* loaded using the `class()` function.
+```{r message=FALSE, warning=FALSE, collapse=TRUE}
+class(GhanaRegion)
+class(GhanaDistrict)
+
+st_crs(GhanaRegion)$epsg
+st_crs(GhanaDistrict)$epsg
+
+st_is_longlat(GhanaRegion)
+st_is_longlat(GhanaDistrict)
+```
+They are all of class **sf**, thats what we want.
+
+
+
+
+The **GhanaDistrict** spatial Object has no CRS, hence the need to set it.
+```{r message=FALSE, warning=FALSE}
+
+GhanaDistrict <-st_set_crs(GhanaDistrict,4326)
+
+#Lets check again to be sure
+st_crs(GhanaDistrict)$epsg
+
+```
+Note, the projections are in **longlat(WGS84)**, since we wouldn't be computing any distance or area
+measurements, there is no need tranforming or reprojecting.
+
+
+
+
+
+## Table Join
+This allows us to join the attribute data to the spatial object(**vector**) based on a common feature(key)
+between the two objects.
+
+
+
+
+Lets create a table join specifically an **innerjoin**.This would narrow down the data to 
+districts that we are more interested in working with.
+```{r messsage=FALSE, warning=FALSE}
+nrow(ClassRoster) #Is 30 rows, so we are not expecting anything less or more than that in our join.
+
+
+MphilDistricts <- inner_join(ClassRoster,GhanaDistrict, by= c("District"="district"))
+
+nrow(MphilDistricts) #The output gives 29 rows, we are short of one.
+
+#Lets try to find out which sample in the ClassRoster was left out.
+dplyr::setdiff(ClassRoster$District,GhanaDistrict$district)
+```
+
+
+
+
+
+We notice Wasa Amenfi West Municipal was left out. Lets find out using the `str_which()` function.
+```{r message=FALSE, warning=FALSE}
+LeftOutDistrict<- stringr::str_which(GhanaDistrict$district,pattern= "Amenfi West Municipal")#Output indicate row 19.
+
+
+#Within the DistrictCentroid it is located at row 19(19th sample)
+
+dplyr::as_tibble(GhanaDistrict[LeftOutDistrict,]) 
+```
+Note the spelling of the **Wassa(double 'ss')** as compared to a **Wasa(single 's')** in the ClassRoster.
+
+
+
+
+
+```{r message=FALSE, warning=FALSE}
+ClassRoster$District <- str_replace(ClassRoster$District, pattern ="Wasa Amenfi West Municipal",
+                           replacement = "Wassa Amenfi West Municipal")
+
+#We have it corrected now
+head(ClassRoster[29,2])
+```
+We can see that the spelling is now corrected.
+
+
+
+
+
+We perform the innerjoin again with the function `inner_join()`. Note; the spatial object would have to 
+begin  first, otherwise output would be a dataframe.
+```{r message=FALSE, warning=FALSE}
+
+MphilDistricts <- dplyr::inner_join(GhanaDistrict,ClassRoster, by= c("district"="District"))
+
+#Lets reorder the colums, by relocating the geometry column to the tail-end 
+MphilDistricts<- MphilDistricts %>% 
+  relocate(geometry, .after= Region)
+
+
+#Lets verify join and re-ordering of the column
+dplyr::as_tibble(head(MphilDistricts)) 
+```
+The number of rows is now 30 as compared to before,join is perfectly done.
+
+
+
+
+
+We have the **Region** and **region** column showing.They hold the same data , lets set one to NULL.
+```{r message=FALSE, warning=FALSE}
+
+MphilDistricts$Region <- NULL #sets the Region column to NULL
+
+#Rename all variable to lowercase just for uniformity
+names(MphilDistricts)<- tolower(names(MphilDistricts))
+
+as_tibble(head(MphilDistricts)) #prints out the first 6 samples(rows).
+```
+
+
+
+
+Lets compute the top 3 districts with highest number of Mphil students 2019-2021
+```{r message=FALSE, warning=FALSE}
+Top3DistrictCount <- st_drop_geometry(MphilDistricts) %>% 
+  select(district) %>% 
+  group_by(district) %>%
+  tally(sort = TRUE, name = "count") %>% 
+  top_n(3, count)
+  
+as_tibble(Top3DistrictCount)
+```
+From the above table summary, it is deduce that Ho Municipal,Mfantseman Municipal and Oforikrom
+Municipal were each represented by two students, with all other Municipal and Districts represented by one student.
+
+
+
+
+
+## Spatial Join
+This communicates how the spatial objects relates based on their location(**x** and **y**) coordinates and how they interact at that location(spatial overlay).
+
+
+
+Lets create a spatial join between the Region and District shape files. This allow us to have all information as one unit.
+```{r message=FALSE, warning=FALSE}
+#Spatial join between GhanaShape and MphilDistrict
+
+RegionDistrict <- sf::st_join(GhanaRegion,MphilDistricts)
+
+# Lets relocate the **geometry** column to the tail-end
+RegionDistrict<- RegionDistrict %>% 
+  relocate(geometry, .after= hometown)
+
+RegionDistrict$region <- NULL #sets the region column to NULL
+
+#Rename all variable to lowercase just for uniformity
+names(RegionDistrict)<- tolower(names(RegionDistrict))
+```
+
+
+
+
+## Centroids
+This enable us create  a single central point of the various region polygon. Thats allowing us to easily plot 
+the regional count in their respective region polygon.
+
+
+
+
+Lets now look at student count at the regional level, and see  wether they are any surprises.Note; this are not necessarily where student are staying or residing, but the birth district of each student.
+```{r message=FALSE, warning=FALSE}
+MphilRegionalCount <- RegionDistrict %>% 
+  select(regions) %>% 
+  group_by(regions) %>%
+  tally(sort = TRUE, name = "region_count")
+
+# Lets  generates the centroids for easy plotting.
+# we would use this centroids as a layer for the leaflet map.
+
+RegionCentroids <- st_centroid(MphilRegionalCount)
+```
+
+
+
+
+## Column Chart and Proportional Symbol Map
+The column chart depicts the raw counts of the students in the various regions within Ghana.
+
+
+
+
+Lets design a basic column chart using the function `ggplot()`.
+```{r message=FALSE, warning=FALSE}
+#lets create our own colour/fill palette using pals
+RegionalColors <- as.vector(pals::alphabet(n=16))  
+
+#Lets reperesnt it on a basic column / bar plot.
+RegionCentroids %>% 
+  ggplot(aes(x=fct_reorder(regions,region_count), y=region_count, fill=regions))+
+  geom_col()+guides(fill=FALSE)+
+  coord_flip()+
+  ggtitle("Regional Representation of Mphil Students 2019-2021")+
+  theme(plot.title = element_text(size=14,family="Tahoma",face="bold",hjust = 0.5))+
+  theme_bw(base_size = 15)+
+  labs(x="Region",y= "Student count")+
+  scale_fill_manual(values = RegionalColors)
+  
+```
+
+
+
+
+
+Lets now map the various **region_count**/ **population** of Mphil students within their regional boundaries.
+(note;this are just raw count). This is represented as a proportional symbol map below.
+```{r message=FALSE, warning=FALSE}
+
+## A static(choropleth) Map of Ghana, showing the population of Mphil Students 2019-2020  
+tm_shape(RegionDistrict)+  
+  tm_polygons(style="cat",col="regions",
+              palette= (palette =RegionalColors),
+              title= "Regions")+
+  tm_shape(RegionCentroids)+
+  tm_bubbles(col= "#FF2800",
+             size = "region_count",scale= 2,
+             title.size="Student Population by Region")+
+  tm_compass(position = c("right","top"))+
+  tm_scale_bar(position = c("right","bottom"), text.size = 0.5, width = 0.25)+
+  tm_layout(legend.title.size = 1, legend.outside = TRUE,
+            legend.title.fontface = "bold",
+            legend.outside.position = "right")
+```
+
+
+
+
+## Interactive Choropleth Map
+Choropleth map is a type of thematic map, where certain regions or areas are shaded in proportion to a particular
+statistical variable. Such variable could be continuous value or discreete integer.
+
+
+
+Lets try to create a basic interactive Choropleth Map using `leaflet()` and `htmltools()`.
+```{r message=FALSE, warning=FALSE }
+
+GhanaBins <- c(0,2,3,5,7) #This allow us to form classes.
+
+GhanaPal<- colorBin("YlOrRd", domain = MphilRegionalCount$region_count, bins=GhanaBins)
+
+#Function for creating Labels
+addLabel <- function(data) {                           # Credit to Ahmad Bazzi, 2020.
+  data$label <- paste0(
+     '<b>', MphilRegionalCount$`regions`,' </b>
+       <br>
+    <table style="width:120px;">
+      <tr>  
+        <td>
+          Student Population:
+        </td>
+        <td align="right">
+        ',MphilRegionalCount$`region_count`,' 
+        </td>
+      </tr>
+    </table>'
+  )
+  data$label <- lapply(data$label, HTML)
+
+  return(data)
+}
+
+
+ 
+leaflet(addLabel(MphilRegionalCount))%>%    
+  setView(1.06669,8.10518, zoom= 6) %>% 
+  addTiles(group="OSM") %>% 
+  addProviderTiles("CartoDB.Positron", group = "Light") %>%
+  addProviderTiles("HERE.satelliteDay", group = "Satellite") %>%
+  addLayersControl(
+    baseGroups    = c("Light", "Satellite"),
+    overlayGroups = c("Regions")
+  ) %>% 
+  addPolygons(
+    fillColor = ~GhanaPal(region_count),
+    fillOpacity = .7,
+    dashArray = "3",
+    color = "#fff",
+    weight=2,
+    opacity = 1,
+    highlight= highlightOptions(
+      weight = 5,
+      color = "#666", 
+      dashArray = "",
+      fillOpacity = .7,
+      bringToFront = T),
+    group = "Regions",
+    label= ~label,
+    labelOptions=labelOptions(
+      style= list("font-weight"="normal", padding = "3px 8px"),
+      textsize = "15px",
+      direction = "auto"))%>%
+  addLegend(
+    pal= GhanaPal, values = ~region_count, opacity =.7,
+    title = "Student Population per Region", #Mphil student population per Region
+    position = "bottomright")
+```
+
+
+
+
+
+<!--html_preserve-->
+
+<body>
+    <style type="text/css">
+	      a:hover{
+	          color: red;
+	      }
+	      
+	      .tab{
+	        margin-left: 40px;
+	        padding-top:0;
+	      }
+	        
+	      p{
+	        	color: #555555;
+	        	font-family: Arial,sans-serif;
+	        	font-size: 16px;
+	        	font-weight: normal;
+	      }
+	 </style> 
+ <div>
+   
+		<h2>
+		  <center><b>References</b></center>
+		</h2>
+		<br>
+		<p>
+			Lovelace,R.,Nowosad,J.,and Muenchow,J.(2019) <em>GeoComputation with R</em>.1st edn.Bocca Raton:
+		</p>
+		<p class="tab">
+			Chapman and Hall/CRC.
+		</P>
+		<br>
+		<p>
+		  Maxwell,A. (2020) <em> Vector-Based Spatial Analysis</em>.
+		  Available at: <a href="http://wvview.org/spatial_analytics/Vector_Analysis/_site/index.html" target="_blank">
+		</P>
+		<p class="tab">
+		  http://wvview.org/spatial_analytics/Vector_Analysis/_site/index.html </a>(Accessed April 2021).
+		</p>
+		<br>
+		<p>
+			RStudio,Inc.(2014) <em>Leaflet for R-Introduction</em>.
+	    		Available at:<a href="http://rstudio.github.io/leaflet/" target="_blank">rstudio.github.io/leaflet/ </a> 
+	    		(Accessed April 2021).
+		</p> 
+	</div>
+	
+</body>
+<!--/html_preserve-->
